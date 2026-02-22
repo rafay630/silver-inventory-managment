@@ -1,140 +1,245 @@
-from decimal import Decimal
+"""
+Report Service — All 8 required reports.
+"""
+from datetime import date
 from sqlalchemy.orm import Session
-from sqlalchemy import func as sql_func
-from app.models.raw_material import RawMaterial, RawMaterialStock
-from app.models.production import ProductionBatch, ProductionBatchMaterial
-from app.models.inventory import WIPInventory, FinishedGoods
-from app.models.wastage import WastageRecord
-from app.models.product import Product
-from app.services.inventory_service import get_current_stock
+from sqlalchemy import func
+from app.models.stock_ledger import StockLedger
+from app.models.item import Item
+from app.models.warehouse import Warehouse
+from app.models.production import ProductionOrder
+from app.models.wip import WIPIssue, WIPIssueItem
+from app.models.expense import ProductionExpense
+from app.services.stock_ledger_service import StockLedgerService
+from app.services.accounting_service import AccountingService
 
 
-def get_stock_report(db: Session):
-    """Raw material stock report with status indicators."""
-    materials = db.query(RawMaterial).all()
-    result = []
-    for m in materials:
-        current = get_current_stock(db, m.id)
-        reorder = m.reorder_level or Decimal("0")
-        if current <= 0:
-            status = "critical"
-        elif current <= reorder:
-            status = "low"
-        else:
-            status = "healthy"
-        result.append({
-            "material_name": m.name,
-            "material_type": m.material_type,
-            "unit": m.unit,
-            "current_stock": current,
-            "reorder_level": reorder,
-            "status": status,
-        })
-    return result
+class ReportService:
 
+    @staticmethod
+    def stock_ledger_report(
+        db: Session,
+        company_id: str,
+        item_id: str = None,
+        warehouse_id: str = None,
+        from_date: date = None,
+        to_date: date = None,
+    ) -> list:
+        """Full stock ledger with running balance."""
+        q = db.query(
+            StockLedger,
+            Item.name.label("item_name"),
+            Item.sku.label("item_sku"),
+            Warehouse.name.label("warehouse_name"),
+        ).join(
+            Item, StockLedger.item_id == Item.id,
+        ).join(
+            Warehouse, StockLedger.warehouse_id == Warehouse.id,
+        ).filter(
+            StockLedger.company_id == company_id,
+        ).order_by(StockLedger.created_at)
 
-def get_wastage_report(db: Session):
-    """Wastage report per product/batch."""
-    records = db.query(WastageRecord).all()
-    result = []
-    for r in records:
-        batch = db.query(ProductionBatch).filter(ProductionBatch.id == r.batch_id).first()
-        material = db.query(RawMaterial).filter(RawMaterial.id == r.raw_material_id).first()
-        product = db.query(Product).filter(Product.id == batch.product_id).first() if batch else None
-        result.append({
-            "batch_number": batch.batch_number if batch else "N/A",
-            "product_name": product.name if product else "N/A",
-            "material_name": material.name if material else "N/A",
-            "expected_wastage": r.expected_wastage or Decimal("0"),
-            "actual_wastage": r.actual_wastage,
-            "variance": r.variance,
-            "variance_percent": r.variance_percent,
-        })
-    return result
+        if item_id:
+            q = q.filter(StockLedger.item_id == item_id)
+        if warehouse_id:
+            q = q.filter(StockLedger.warehouse_id == warehouse_id)
+        if from_date:
+            q = q.filter(StockLedger.created_at >= from_date)
+        if to_date:
+            q = q.filter(StockLedger.created_at <= to_date)
 
+        results = []
+        running_balance = {}
+        for row in q.all():
+            sl = row[0]
+            key = (sl.item_id, sl.warehouse_id)
+            bal = running_balance.get(key, 0)
+            bal += float(sl.qty_in) - float(sl.qty_out)
+            running_balance[key] = bal
 
-def get_efficiency_report(db: Session):
-    """Production efficiency report — actual vs planned."""
-    batches = db.query(ProductionBatch).filter(ProductionBatch.status == "completed").all()
-    result = []
-    for b in batches:
-        product = db.query(Product).filter(Product.id == b.product_id).first()
-        efficiency = Decimal("0")
-        if b.planned_quantity > 0:
-            efficiency = (Decimal(str(b.completed_quantity)) / Decimal(str(b.planned_quantity))) * 100
-        result.append({
-            "batch_number": b.batch_number,
-            "product_name": product.name if product else "N/A",
-            "planned_quantity": b.planned_quantity,
-            "completed_quantity": b.completed_quantity,
-            "rejected_quantity": b.rejected_quantity,
-            "efficiency_percent": round(efficiency, 2),
-        })
-    return result
+            results.append({
+                "id": sl.id,
+                "item_id": sl.item_id,
+                "item_name": row.item_name,
+                "item_sku": row.item_sku,
+                "warehouse_id": sl.warehouse_id,
+                "warehouse_name": row.warehouse_name,
+                "qty_in": float(sl.qty_in),
+                "qty_out": float(sl.qty_out),
+                "unit_cost": float(sl.unit_cost),
+                "reference_type": sl.reference_type,
+                "reference_id": sl.reference_id,
+                "running_balance": bal,
+                "created_at": sl.created_at.isoformat() if sl.created_at else None,
+            })
+        return results
 
+    @staticmethod
+    def inventory_valuation(
+        db: Session,
+        company_id: str,
+        warehouse_id: str = None,
+    ) -> list:
+        """Inventory valuation using weighted average cost."""
+        return StockLedgerService.get_all_balances(
+            db, company_id, warehouse_id=warehouse_id,
+        )
 
-def get_wip_summary(db: Session):
-    """WIP summary grouped by product."""
-    products = db.query(Product).all()
-    result = []
-    for p in products:
-        wip_items = db.query(WIPInventory).filter(WIPInventory.product_id == p.id).all()
-        if not wip_items:
-            continue
-        in_process = sum(w.quantity for w in wip_items if w.status == "in_process")
-        completed = sum(w.quantity for w in wip_items if w.status == "completed")
-        rejected = sum(w.quantity for w in wip_items if w.status == "rejected")
-        result.append({
-            "product_name": p.name,
-            "total_in_process": in_process,
-            "total_completed": completed,
-            "total_rejected": rejected,
-        })
-    return result
+    @staticmethod
+    def production_cost_sheet(
+        db: Session,
+        company_id: str,
+        order_id: str,
+    ) -> dict:
+        """Detailed cost breakdown for a production order."""
+        order = db.query(ProductionOrder).filter(
+            ProductionOrder.id == order_id,
+            ProductionOrder.company_id == company_id,
+        ).first()
+        if not order:
+            return {}
 
+        # Material costs
+        material_items = db.query(
+            WIPIssueItem.item_id,
+            Item.name.label("item_name"),
+            func.sum(WIPIssueItem.quantity).label("total_qty"),
+            func.sum(WIPIssueItem.total_cost).label("total_cost"),
+        ).join(
+            WIPIssue, WIPIssueItem.wip_issue_id == WIPIssue.id,
+        ).join(
+            Item, WIPIssueItem.item_id == Item.id,
+        ).filter(
+            WIPIssue.production_order_id == order_id,
+        ).group_by(
+            WIPIssueItem.item_id, Item.name,
+        ).all()
 
-def get_batch_history(db: Session):
-    """Full batch history."""
-    batches = db.query(ProductionBatch).order_by(ProductionBatch.created_at.desc()).all()
-    result = []
-    for b in batches:
-        product = db.query(Product).filter(Product.id == b.product_id).first()
-        result.append({
-            "batch_number": b.batch_number,
-            "product_name": product.name if product else "N/A",
-            "planned_quantity": b.planned_quantity,
-            "completed_quantity": b.completed_quantity,
-            "rejected_quantity": b.rejected_quantity,
-            "status": b.status,
-            "started_at": b.started_at,
-            "completed_at": b.completed_at,
-        })
-    return result
+        materials = [{
+            "item_id": m.item_id,
+            "item_name": m.item_name,
+            "quantity": float(m.total_qty),
+            "cost": float(m.total_cost),
+        } for m in material_items]
 
+        total_material_cost = sum(m["cost"] for m in materials)
 
-def get_consumption_variance(db: Session):
-    """Consumption variance report — required vs actual per batch."""
-    batch_materials = db.query(ProductionBatchMaterial).all()
-    result = []
-    for bm in batch_materials:
-        batch = db.query(ProductionBatch).filter(ProductionBatch.id == bm.batch_id).first()
-        material = db.query(RawMaterial).filter(RawMaterial.id == bm.raw_material_id).first()
-        product = db.query(Product).filter(Product.id == batch.product_id).first() if batch else None
+        # Expenses
+        expenses = db.query(ProductionExpense).filter(
+            ProductionExpense.production_order_id == order_id,
+        ).all()
 
-        variance = None
-        variance_pct = None
-        if bm.actual_quantity is not None and bm.required_quantity:
-            variance = bm.actual_quantity - bm.required_quantity
-            if bm.required_quantity > 0:
-                variance_pct = (variance / bm.required_quantity) * 100
+        expense_list = [{
+            "id": e.id,
+            "expense_type": e.expense_type,
+            "description": e.description,
+            "amount": float(e.amount),
+            "date": e.expense_date.isoformat() if e.expense_date else None,
+        } for e in expenses]
 
-        result.append({
-            "batch_number": batch.batch_number if batch else "N/A",
-            "product_name": product.name if product else "N/A",
-            "material_name": material.name if material else "N/A",
-            "required_quantity": bm.required_quantity,
-            "actual_quantity": bm.actual_quantity,
-            "variance": variance,
-            "variance_percent": variance_pct,
-        })
-    return result
+        total_expenses = sum(e["amount"] for e in expense_list)
+        total_cost = total_material_cost + total_expenses
+        completed = float(order.completed_qty)
+        unit_cost = total_cost / completed if completed > 0 else 0
+
+        return {
+            "order_id": order.id,
+            "order_number": order.order_number,
+            "product_id": order.product_id,
+            "order_qty": float(order.order_qty),
+            "completed_qty": completed,
+            "status": order.status,
+            "materials": materials,
+            "total_material_cost": round(total_material_cost, 4),
+            "expenses": expense_list,
+            "total_expenses": round(total_expenses, 4),
+            "total_production_cost": round(total_cost, 4),
+            "unit_cost": round(unit_cost, 4),
+        }
+
+    @staticmethod
+    def wip_summary(
+        db: Session,
+        company_id: str,
+    ) -> list:
+        """WIP summary — all in-progress production orders with costs."""
+        orders = db.query(ProductionOrder).filter(
+            ProductionOrder.company_id == company_id,
+            ProductionOrder.status == "in_progress",
+        ).all()
+
+        results = []
+        for order in orders:
+            material_cost = db.query(
+                func.coalesce(func.sum(WIPIssueItem.total_cost), 0)
+            ).join(
+                WIPIssue, WIPIssueItem.wip_issue_id == WIPIssue.id
+            ).filter(
+                WIPIssue.production_order_id == order.id,
+            ).scalar()
+
+            expense_cost = db.query(
+                func.coalesce(func.sum(ProductionExpense.amount), 0)
+            ).filter(
+                ProductionExpense.production_order_id == order.id,
+            ).scalar()
+
+            results.append({
+                "order_id": order.id,
+                "order_number": order.order_number,
+                "product_id": order.product_id,
+                "order_qty": float(order.order_qty),
+                "completed_qty": float(order.completed_qty),
+                "material_cost": float(material_cost),
+                "expense_cost": float(expense_cost),
+                "total_wip_value": float(material_cost) + float(expense_cost),
+            })
+
+        return results
+
+    @staticmethod
+    def material_consumption_report(
+        db: Session,
+        company_id: str,
+        from_date: date = None,
+        to_date: date = None,
+    ) -> list:
+        """Material consumption grouped by item."""
+        q = db.query(
+            WIPIssueItem.item_id,
+            Item.name.label("item_name"),
+            func.sum(WIPIssueItem.quantity).label("total_qty"),
+            func.sum(WIPIssueItem.total_cost).label("total_cost"),
+        ).join(
+            WIPIssue, WIPIssueItem.wip_issue_id == WIPIssue.id,
+        ).join(
+            Item, WIPIssueItem.item_id == Item.id,
+        ).filter(
+            WIPIssue.company_id == company_id,
+        )
+
+        if from_date:
+            q = q.filter(WIPIssue.issue_date >= from_date)
+        if to_date:
+            q = q.filter(WIPIssue.issue_date <= to_date)
+
+        q = q.group_by(WIPIssueItem.item_id, Item.name).order_by(Item.name)
+
+        return [{
+            "item_id": row.item_id,
+            "item_name": row.item_name,
+            "total_quantity": float(row.total_qty),
+            "total_cost": float(row.total_cost),
+        } for row in q.all()]
+
+    @staticmethod
+    def trial_balance(db: Session, company_id: str, as_of_date: date = None) -> dict:
+        return AccountingService.get_trial_balance(db, company_id, as_of_date)
+
+    @staticmethod
+    def profit_and_loss(db: Session, company_id: str, from_date: date, to_date: date) -> dict:
+        return AccountingService.get_profit_and_loss(db, company_id, from_date, to_date)
+
+    @staticmethod
+    def balance_sheet(db: Session, company_id: str, as_of_date: date = None) -> dict:
+        return AccountingService.get_balance_sheet(db, company_id, as_of_date)

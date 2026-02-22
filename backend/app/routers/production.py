@@ -1,112 +1,154 @@
+"""Production Orders Router — Create, manage, and complete production orders."""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.schemas.production import BatchCreate, BatchComplete, BatchResponse, BatchMaterialResponse
-from app.dependencies import get_current_user, require_roles
-from app.models.production import ProductionBatch, ProductionBatchMaterial
-from app.models.product import Product
-from app.models.raw_material import RawMaterial
+from app.models.production import ProductionOrder
 from app.models.user import User
-from app.services.production_service import (
-    create_production_batch,
-    complete_production_batch,
-    cancel_production_batch,
+from app.dependencies import get_current_user, require_roles
+from app.schemas.production import (
+    ProductionOrderCreate, ProductionOrderOut,
+    WIPIssueCreate, WIPIssueOut,
+    ProductionExpenseCreate, ProductionExpenseOut,
+    ProductionCompletionRequest,
 )
-from typing import List
-from uuid import UUID
+from app.services.production_service import ProductionService
+from app.services.wip_service import WIPService
+from app.services.expense_service import ExpenseService
+from app.services.completion_service import CompletionService
+from typing import List, Optional
 
-router = APIRouter(prefix="/api/production", tags=["Production"])
-
-
-def _build_batch_response(batch: ProductionBatch, db: Session) -> BatchResponse:
-    product = db.query(Product).filter(Product.id == batch.product_id).first()
-    materials = []
-    for bm in batch.materials:
-        rm = db.query(RawMaterial).filter(RawMaterial.id == bm.raw_material_id).first()
-        materials.append(BatchMaterialResponse(
-            id=bm.id,
-            batch_id=bm.batch_id,
-            raw_material_id=bm.raw_material_id,
-            raw_material_name=rm.name if rm else None,
-            required_quantity=bm.required_quantity,
-            actual_quantity=bm.actual_quantity,
-            wastage_expected=bm.wastage_expected,
-            wastage_actual=bm.wastage_actual,
-        ))
-    return BatchResponse(
-        id=batch.id,
-        batch_number=batch.batch_number,
-        product_id=batch.product_id,
-        product_name=product.name if product else None,
-        planned_quantity=batch.planned_quantity,
-        completed_quantity=batch.completed_quantity,
-        rejected_quantity=batch.rejected_quantity,
-        status=batch.status,
-        started_at=batch.started_at,
-        completed_at=batch.completed_at,
-        created_by=batch.created_by,
-        notes=batch.notes,
-        materials=materials,
-        created_at=batch.created_at,
-    )
+router = APIRouter(prefix="/api/production-orders", tags=["Production"])
 
 
-@router.get("/batches", response_model=List[BatchResponse])
-def list_batches(
-    status: str = None,
+# ═══ Production Orders ═══
+@router.post("/", response_model=ProductionOrderOut, status_code=201)
+def create_production_order(
+    data: ProductionOrderCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(["admin", "production_manager"])),
 ):
-    query = db.query(ProductionBatch)
+    order = ProductionService.create_production_order(
+        db=db,
+        company_id=user.company_id,
+        product_id=data.product_id,
+        bom_id=data.bom_id,
+        order_qty=data.order_qty,
+        warehouse_id=data.warehouse_id,
+        start_date=data.start_date,
+        end_date=data.end_date,
+        notes=data.notes,
+        created_by=user.id,
+    )
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+@router.get("/", response_model=List[ProductionOrderOut])
+def list_production_orders(
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    q = db.query(ProductionOrder).filter(ProductionOrder.company_id == user.company_id)
     if status:
-        query = query.filter(ProductionBatch.status == status)
-    batches = query.order_by(ProductionBatch.created_at.desc()).all()
-    return [_build_batch_response(b, db) for b in batches]
+        q = q.filter(ProductionOrder.status == status)
+    return q.order_by(ProductionOrder.created_at.desc()).all()
 
 
-@router.post("/batches", response_model=BatchResponse)
-def create_batch(
-    data: BatchCreate,
+@router.get("/{order_id}", response_model=ProductionOrderOut)
+def get_production_order(order_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    order = db.query(ProductionOrder).filter(
+        ProductionOrder.id == order_id,
+        ProductionOrder.company_id == user.company_id,
+    ).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Production order not found")
+    return order
+
+
+@router.post("/{order_id}/start", response_model=ProductionOrderOut)
+def start_production(order_id: str, db: Session = Depends(get_db), user: User = Depends(require_roles(["admin", "production_manager"]))):
+    order = ProductionService.start_production(db, user.company_id, order_id)
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+@router.post("/{order_id}/cancel", response_model=ProductionOrderOut)
+def cancel_production(order_id: str, db: Session = Depends(get_db), user: User = Depends(require_roles(["admin", "production_manager"]))):
+    order = ProductionService.cancel_production(db, user.company_id, order_id)
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+# ═══ WIP Issues ═══
+@router.post("/{order_id}/wip-issues", response_model=WIPIssueOut, status_code=201)
+def issue_materials(
+    order_id: str,
+    data: WIPIssueCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "production_manager"])),
+    user: User = Depends(require_roles(["admin", "production_manager", "store_manager"])),
 ):
-    batch = create_production_batch(
-        db, data.product_id, data.planned_quantity, current_user.id, data.notes
+    """Issue raw materials from warehouse to production (WIP)."""
+    if data.production_order_id != order_id:
+        raise HTTPException(status_code=400, detail="Order ID mismatch")
+    issue = WIPService.issue_materials(
+        db=db,
+        company_id=user.company_id,
+        production_order_id=order_id,
+        issue_date=data.issue_date,
+        items=[item.model_dump() for item in data.items],
+        created_by=user.id,
     )
-    return _build_batch_response(batch, db)
+    db.commit()
+    db.refresh(issue)
+    return issue
 
 
-@router.get("/batches/{batch_id}", response_model=BatchResponse)
-def get_batch(
-    batch_id: UUID,
+# ═══ Production Expenses ═══
+@router.post("/{order_id}/expenses", response_model=ProductionExpenseOut, status_code=201)
+def record_expense(
+    order_id: str,
+    data: ProductionExpenseCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    user: User = Depends(require_roles(["admin", "accountant", "production_manager"])),
 ):
-    batch = db.query(ProductionBatch).filter(ProductionBatch.id == batch_id).first()
-    if not batch:
-        raise HTTPException(status_code=404, detail="Batch not found")
-    return _build_batch_response(batch, db)
-
-
-@router.patch("/batches/{batch_id}/complete", response_model=BatchResponse)
-def complete_batch(
-    batch_id: UUID,
-    data: BatchComplete,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "production_manager"])),
-):
-    batch = complete_production_batch(
-        db, batch_id, data.completed_quantity, data.rejected_quantity,
-        data.actual_wastage, current_user.id, data.notes,
+    """Record a production expense with absorption costing."""
+    if data.production_order_id != order_id:
+        raise HTTPException(status_code=400, detail="Order ID mismatch")
+    expense = ExpenseService.record_expense(
+        db=db,
+        company_id=user.company_id,
+        production_order_id=order_id,
+        expense_type=data.expense_type,
+        amount=data.amount,
+        expense_date=data.expense_date,
+        description=data.description,
+        created_by=user.id,
     )
-    return _build_batch_response(batch, db)
+    db.commit()
+    db.refresh(expense)
+    return expense
 
 
-@router.patch("/batches/{batch_id}/cancel", response_model=BatchResponse)
-def cancel_batch(
-    batch_id: UUID,
+# ═══ Production Completion ═══
+@router.post("/{order_id}/complete")
+def complete_production(
+    order_id: str,
+    data: ProductionCompletionRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "production_manager"])),
+    user: User = Depends(require_roles(["admin", "production_manager"])),
 ):
-    batch = cancel_production_batch(db, batch_id, current_user.id)
-    return _build_batch_response(batch, db)
+    """Complete production — calculates costs, creates finished goods, journals."""
+    result = CompletionService.complete_production(
+        db=db,
+        company_id=user.company_id,
+        order_id=order_id,
+        completed_qty=data.completed_qty,
+        completion_date=data.completion_date,
+        created_by=user.id,
+    )
+    db.commit()
+    return result

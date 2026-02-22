@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "your-super-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
-    WASTAGE_ALERT_THRESHOLD: float = 10.0  # percent
+    PREVENT_NEGATIVE_STOCK: bool = True
 
     class Config:
         env_file = ".env"

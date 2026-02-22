@@ -1,44 +1,53 @@
 import uuid
-from sqlalchemy import Column, String, Integer, Numeric, DateTime, Text, ForeignKey
+from sqlalchemy import Column, String, Numeric, DateTime, Date, Text, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
 
 
-class ProductionBatch(Base):
-    __tablename__ = "production_batches"
+class ProductionOrder(Base):
+    __tablename__ = "production_orders"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    batch_number = Column(String(100), unique=True, nullable=False, index=True)
-    product_id = Column(String(36), ForeignKey("products.id"), nullable=False, index=True)
-    planned_quantity = Column(Integer, nullable=False)
-    completed_quantity = Column(Integer, default=0)
-    rejected_quantity = Column(Integer, default=0)
-    status = Column(String(30), default="in_progress", index=True)  # in_progress | completed | cancelled
-    started_at = Column(DateTime(timezone=True), server_default=func.now())
-    completed_at = Column(DateTime(timezone=True))
-    created_by = Column(String(36), ForeignKey("users.id"))
+    company_id = Column(String(36), ForeignKey("companies.id"), nullable=False, index=True)
+    order_number = Column(String(50), nullable=False, index=True)
+    product_id = Column(String(36), ForeignKey("items.id"), nullable=False, index=True)
+    bom_id = Column(String(36), ForeignKey("boms.id"), nullable=False, index=True)
+    order_qty = Column(Numeric(18, 4), nullable=False)
+    completed_qty = Column(Numeric(18, 4), default=0)
+    warehouse_id = Column(String(36), ForeignKey("warehouses.id"), nullable=False, index=True)
+    status = Column(String(30), nullable=False, default="planned", index=True)
+    # Status: planned, in_progress, completed, cancelled
+    start_date = Column(Date)
+    end_date = Column(Date)
     notes = Column(Text)
+    created_by = Column(String(36), ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    product = relationship("Product")
+    company = relationship("Company")
+    product = relationship("Item", foreign_keys=[product_id])
+    bom = relationship("BOM")
+    warehouse = relationship("Warehouse")
     creator = relationship("User")
-    materials = relationship("ProductionBatchMaterial", back_populates="batch")
-    wip_items = relationship("WIPInventory", back_populates="batch")
-    wastage_records = relationship("WastageRecord", back_populates="batch")
+    requirements = relationship("ProductionRequirement", back_populates="production_order", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_prod_orders_company_number", "company_id", "order_number", unique=True),
+    )
 
 
-class ProductionBatchMaterial(Base):
-    __tablename__ = "production_batch_materials"
+class ProductionRequirement(Base):
+    """Snapshot of material requirements calculated at order creation."""
+    __tablename__ = "production_requirements"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    batch_id = Column(String(36), ForeignKey("production_batches.id"), nullable=False, index=True)
-    raw_material_id = Column(String(36), ForeignKey("raw_materials.id"), nullable=False)
-    required_quantity = Column(Numeric(15, 4), nullable=False)
-    actual_quantity = Column(Numeric(15, 4))
-    wastage_expected = Column(Numeric(15, 4))
-    wastage_actual = Column(Numeric(15, 4))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    production_order_id = Column(String(36), ForeignKey("production_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    item_id = Column(String(36), ForeignKey("items.id"), nullable=False, index=True)
+    required_qty = Column(Numeric(18, 4), nullable=False)
+    available_qty = Column(Numeric(18, 4), nullable=False, default=0)
+    status = Column(String(30), nullable=False, default="adequate")
+    # Status: adequate, insufficient
 
-    batch = relationship("ProductionBatch", back_populates="materials")
-    raw_material = relationship("RawMaterial")
+    production_order = relationship("ProductionOrder", back_populates="requirements")
+    item = relationship("Item")

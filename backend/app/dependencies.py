@@ -26,6 +26,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 
 def require_roles(allowed_roles: List[str]):
+    """Dependency factory for role-based access control."""
     def role_checker(current_user: User = Depends(get_current_user)):
         if current_user.role not in allowed_roles:
             raise HTTPException(
@@ -34,3 +35,8 @@ def require_roles(allowed_roles: List[str]):
             )
         return current_user
     return role_checker
+
+
+def get_company_id(current_user: User = Depends(get_current_user)) -> str:
+    """Extract company_id from the current user for tenant-scoped queries."""
+    return current_user.company_id

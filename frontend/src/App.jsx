@@ -3,14 +3,14 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import AppLayout from './components/layout/AppLayout';
 import Login from './pages/auth/Login';
 import Dashboard from './pages/Dashboard';
-import RawMaterialList from './pages/raw-materials/RawMaterialList';
-import ProductList from './pages/products/ProductList';
-import SupplierList from './pages/suppliers/SupplierList';
-import BatchList from './pages/production/BatchList';
-import WIPTracker from './pages/wip/WIPTracker';
-import FinishedGoodsList from './pages/finished-goods/FinishedGoodsList';
+import ItemList from './pages/inventory/ItemList';
+import WarehouseList from './pages/inventory/WarehouseList';
+import StockLedger from './pages/inventory/StockLedger';
+import BOMList from './pages/manufacturing/BOMList';
+import ProductionOrders from './pages/manufacturing/ProductionOrders';
+import SalesOrders from './pages/sales/SalesOrders';
+import Accounting from './pages/accounting/Accounting';
 import Reports from './pages/reports/Reports';
-import Transactions from './pages/transactions/Transactions';
 
 function ProtectedRoute({ children }) {
     const { user, loading } = useAuth();
@@ -34,14 +34,14 @@ function AppRoutes() {
                 }
             >
                 <Route path="/" element={<Dashboard />} />
-                <Route path="/raw-materials" element={<RawMaterialList />} />
-                <Route path="/products" element={<ProductList />} />
-                <Route path="/suppliers" element={<SupplierList />} />
-                <Route path="/production" element={<BatchList />} />
-                <Route path="/wip" element={<WIPTracker />} />
-                <Route path="/finished-goods" element={<FinishedGoodsList />} />
+                <Route path="/items" element={<ItemList />} />
+                <Route path="/warehouses" element={<WarehouseList />} />
+                <Route path="/stock-ledger" element={<StockLedger />} />
+                <Route path="/bom" element={<BOMList />} />
+                <Route path="/production" element={<ProductionOrders />} />
+                <Route path="/sales" element={<SalesOrders />} />
+                <Route path="/accounting" element={<Accounting />} />
                 <Route path="/reports" element={<Reports />} />
-                <Route path="/transactions" element={<Transactions />} />
             </Route>
 
             <Route path="*" element={<Navigate to="/" replace />} />

@@ -1,15 +1,14 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import {
-    HiOutlineViewGrid, HiOutlineCube, HiOutlineBeaker,
-    HiOutlineCog, HiOutlineClipboardList, HiOutlineChartBar,
-    HiOutlineArchive, HiOutlineUsers, HiOutlineTruck,
-    HiOutlineLogout, HiOutlineDocumentReport,
+    HiOutlineViewGrid, HiOutlineCube, HiOutlineOfficeBuilding,
+    HiOutlineDocumentText, HiOutlineCog, HiOutlineClipboardList,
+    HiOutlineChartBar, HiOutlineCurrencyDollar, HiOutlineCalculator,
+    HiOutlineShoppingCart, HiOutlineLogout,
 } from 'react-icons/hi';
 
 export default function Sidebar() {
     const { user, logout } = useAuth();
-    const location = useLocation();
 
     const navSections = [
         {
@@ -21,37 +20,32 @@ export default function Sidebar() {
         {
             title: 'Inventory',
             items: [
-                { path: '/raw-materials', icon: HiOutlineCube, label: 'Raw Materials' },
-                { path: '/products', icon: HiOutlineBeaker, label: 'Products & BOM' },
-                { path: '/suppliers', icon: HiOutlineTruck, label: 'Suppliers' },
+                { path: '/items', icon: HiOutlineCube, label: 'Items' },
+                { path: '/warehouses', icon: HiOutlineOfficeBuilding, label: 'Warehouses' },
+                { path: '/stock-ledger', icon: HiOutlineDocumentText, label: 'Stock Ledger' },
             ],
         },
         {
-            title: 'Production',
+            title: 'Manufacturing',
             items: [
-                { path: '/production', icon: HiOutlineCog, label: 'Production Batches' },
-                { path: '/wip', icon: HiOutlineClipboardList, label: 'Work In Progress' },
-                { path: '/finished-goods', icon: HiOutlineArchive, label: 'Finished Goods' },
+                { path: '/bom', icon: HiOutlineClipboardList, label: 'Bill of Materials' },
+                { path: '/production', icon: HiOutlineCog, label: 'Production Orders' },
+            ],
+        },
+        {
+            title: 'Sales & Finance',
+            items: [
+                { path: '/sales', icon: HiOutlineShoppingCart, label: 'Sales Orders' },
+                { path: '/accounting', icon: HiOutlineCalculator, label: 'Accounting' },
             ],
         },
         {
             title: 'Analytics',
             items: [
                 { path: '/reports', icon: HiOutlineChartBar, label: 'Reports' },
-                { path: '/transactions', icon: HiOutlineDocumentReport, label: 'Audit Trail' },
             ],
         },
     ];
-
-    // Admin-only section
-    if (user?.role === 'admin') {
-        navSections.push({
-            title: 'Admin',
-            items: [
-                { path: '/users', icon: HiOutlineUsers, label: 'User Management' },
-            ],
-        });
-    }
 
     return (
         <aside className="sidebar">

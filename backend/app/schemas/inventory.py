@@ -1,57 +1,141 @@
 from pydantic import BaseModel
-from typing import Optional
-from uuid import UUID
+from typing import Optional, List
 from datetime import datetime
-from decimal import Decimal
 
 
-class WIPResponse(BaseModel):
-    id: UUID
-    batch_id: UUID
-    batch_number: Optional[str] = None
-    product_id: UUID
-    product_name: Optional[str] = None
-    quantity: Decimal
-    status: str
+# ── Category ──
+class CategoryCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+class CategoryOut(BaseModel):
+    id: str
+    company_id: str
+    name: str
+    description: Optional[str] = None
+    created_at: datetime
+    class Config:
+        from_attributes = True
+
+
+# ── UOM ──
+class UOMCreate(BaseModel):
+    name: str
+    abbreviation: str
+
+class UOMOut(BaseModel):
+    id: str
+    company_id: str
+    name: str
+    abbreviation: str
+    created_at: datetime
+    class Config:
+        from_attributes = True
+
+
+class UOMConversionCreate(BaseModel):
+    from_uom_id: str
+    to_uom_id: str
+    conversion_factor: float
+
+class UOMConversionOut(BaseModel):
+    id: str
+    company_id: str
+    from_uom_id: str
+    to_uom_id: str
+    conversion_factor: float
+    created_at: datetime
+    class Config:
+        from_attributes = True
+
+
+# ── Item ──
+class ItemCreate(BaseModel):
+    name: str
+    sku: Optional[str] = None
+    barcode: Optional[str] = None
+    description: Optional[str] = None
+    item_type: str  # raw_material | finished_good
+    category_id: Optional[str] = None
+    uom_id: str
+    base_cost: float = 0
+    reorder_level: float = 0
+
+class ItemUpdate(BaseModel):
+    name: Optional[str] = None
+    sku: Optional[str] = None
+    barcode: Optional[str] = None
+    description: Optional[str] = None
+    category_id: Optional[str] = None
+    uom_id: Optional[str] = None
+    base_cost: Optional[float] = None
+    reorder_level: Optional[float] = None
+    is_active: Optional[bool] = None
+
+class ItemOut(BaseModel):
+    id: str
+    company_id: str
+    name: str
+    sku: Optional[str] = None
+    barcode: Optional[str] = None
+    description: Optional[str] = None
+    item_type: str
+    category_id: Optional[str] = None
+    uom_id: str
+    base_cost: float
+    reorder_level: float
+    is_active: bool
+    created_at: datetime
     updated_at: datetime
-    created_at: datetime
-
     class Config:
         from_attributes = True
 
 
-class WIPStatusUpdate(BaseModel):
-    status: str  # in_process | completed | rejected
+# ── Warehouse ──
+class WarehouseCreate(BaseModel):
+    name: str
+    code: str
+    address: Optional[str] = None
 
+class WarehouseUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    address: Optional[str] = None
+    is_active: Optional[bool] = None
 
-class FinishedGoodsResponse(BaseModel):
-    id: UUID
-    product_id: UUID
-    product_name: Optional[str] = None
-    batch_id: Optional[UUID]
-    batch_number: Optional[str] = None
-    quantity: Decimal
-    location: str
+class WarehouseOut(BaseModel):
+    id: str
+    company_id: str
+    name: str
+    code: str
+    address: Optional[str] = None
+    is_active: bool
     created_at: datetime
-
     class Config:
         from_attributes = True
 
 
-class TransactionResponse(BaseModel):
-    id: UUID
-    transaction_type: str
-    raw_material_id: Optional[UUID]
-    raw_material_name: Optional[str] = None
-    product_id: Optional[UUID]
-    product_name: Optional[str] = None
-    batch_id: Optional[UUID]
-    quantity: Decimal
-    unit: Optional[str]
-    reference_number: Optional[str]
-    notes: Optional[str]
-    created_by: Optional[UUID]
+# ── Stock Ledger ──
+class StockLedgerOut(BaseModel):
+    id: str
+    company_id: str
+    item_id: str
+    warehouse_id: str
+    qty_in: float
+    qty_out: float
+    unit_cost: float
+    reference_type: str
+    reference_id: str
+    description: Optional[str] = None
     created_at: datetime
-
     class Config:
         from_attributes = True
+
+class StockBalanceOut(BaseModel):
+    item_id: str
+    item_name: str
+    warehouse_id: str
+    warehouse_name: str
+    balance: float
+    weighted_avg_cost: float
+    total_value: float

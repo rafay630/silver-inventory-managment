@@ -1,130 +1,204 @@
 import { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { reportsAPI } from '../../services/api';
-import { formatWeight, formatPercent, statusColor } from '../../utils/formatters';
+import { reportsAPI, productionAPI } from '../../services/api';
+import { formatCurrency, formatNumber, formatDate } from '../../utils/formatters';
+import PrintSlip, { PrintDetail, PrintTable } from '../../components/PrintSlip';
 
 export default function Reports() {
-    const [activeTab, setActiveTab] = useState('stock');
-    const [data, setData] = useState([]);
-    const [loading, setLoading] = useState(false);
+    const [activeTab, setActiveTab] = useState('inventory-valuation');
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [prodOrders, setProdOrders] = useState([]);
+    const [selectedOrder, setSelectedOrder] = useState('');
+    const [printMode, setPrintMode] = useState(false);
 
-    const tabs = [
-        { key: 'stock', label: 'Stock Report' },
-        { key: 'wastage', label: 'Wastage' },
-        { key: 'efficiency', label: 'Efficiency' },
-        { key: 'wip', label: 'WIP Summary' },
-        { key: 'batch', label: 'Batch History' },
-        { key: 'variance', label: 'Consumption Variance' },
-    ];
+    useEffect(() => { loadTab(); }, [activeTab, selectedOrder]);
+    useEffect(() => {
+        productionAPI.list().then(r => setProdOrders(r.data)).catch(() => { });
+    }, []);
 
-    useEffect(() => { loadReport(activeTab); }, [activeTab]);
-
-    const loadReport = async (tab) => {
+    const loadTab = async () => {
         setLoading(true);
+        setData(null);
         try {
-            const apiMap = {
-                stock: reportsAPI.stockReport,
-                wastage: reportsAPI.wastageReport,
-                efficiency: reportsAPI.efficiencyReport,
-                wip: reportsAPI.wipSummary,
-                batch: reportsAPI.batchHistory,
-                variance: reportsAPI.consumptionVariance,
-            };
-            const res = await apiMap[tab]();
-            setData(res.data);
-        } catch (err) { console.error(err); }
+            if (activeTab === 'inventory-valuation') {
+                const res = await reportsAPI.inventoryValuation();
+                setData(res.data);
+            } else if (activeTab === 'wip-summary') {
+                const res = await reportsAPI.wipSummary();
+                setData(res.data);
+            } else if (activeTab === 'material-consumption') {
+                const res = await reportsAPI.materialConsumption();
+                setData(res.data);
+            } else if (activeTab === 'production-cost' && selectedOrder) {
+                const res = await reportsAPI.productionCostSheet(selectedOrder);
+                setData(res.data);
+            }
+        } catch (err) { console.error(err); setData(null); }
         finally { setLoading(false); }
     };
 
-    const renderTable = () => {
-        if (data.length === 0) return <div className="empty-state"><p>No data available for this report.</p></div>;
+    const tabs = [
+        { id: 'inventory-valuation', label: 'Inventory Valuation' },
+        { id: 'wip-summary', label: 'WIP Summary' },
+        { id: 'material-consumption', label: 'Material Consumption' },
+        { id: 'production-cost', label: 'Production Cost Sheet' },
+    ];
 
-        switch (activeTab) {
-            case 'stock':
-                return (
-                    <>
-                        <div className="chart-card mb-4">
-                            <div className="chart-title">Stock Levels</div>
-                            <ResponsiveContainer width="100%" height={250}>
-                                <BarChart data={data}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#1e2d3d" />
-                                    <XAxis dataKey="material_name" tick={{ fill: '#94a3b8', fontSize: 12 }} />
-                                    <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} />
-                                    <Tooltip contentStyle={{ background: '#1a2332', border: '1px solid #1e2d3d', borderRadius: 8 }} />
-                                    <Bar dataKey="current_stock" fill="#c0c0c0" radius={[4, 4, 0, 0]} name="Current" />
-                                    <Bar dataKey="reorder_level" fill="#ef4444" radius={[4, 4, 0, 0]} name="Reorder Level" opacity={0.5} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                        <table className="data-table">
-                            <thead><tr><th>Material</th><th>Type</th><th>Stock</th><th>Reorder Level</th><th>Status</th></tr></thead>
-                            <tbody>{data.map((r, i) => (
-                                <tr key={i}><td className="font-bold">{r.material_name}</td><td>{r.material_type}</td><td className="font-mono">{formatWeight(r.current_stock, r.unit)}</td><td className="font-mono">{formatWeight(r.reorder_level, r.unit)}</td><td><span className={`badge ${statusColor(r.status)}`}>{r.status}</span></td></tr>
-                            ))}</tbody>
-                        </table>
-                    </>
-                );
-            case 'wastage':
-                return (
+    const renderContent = () => {
+        if (loading) return <div className="empty-state"><p>Loading report...</p></div>;
+        if (activeTab === 'production-cost' && !selectedOrder) return <div className="empty-state"><p>Select a production order above to view its cost sheet.</p></div>;
+        if (!data) return <div className="empty-state"><p>No data available.</p></div>;
+
+        if (activeTab === 'inventory-valuation') {
+            const items = Array.isArray(data) ? data : [];
+            const grandTotal = items.reduce((s, r) => s + (r.total_value || 0), 0);
+            return (
+                <>
                     <table className="data-table">
-                        <thead><tr><th>Batch</th><th>Product</th><th>Material</th><th>Expected</th><th>Actual</th><th>Variance</th><th>Variance %</th></tr></thead>
-                        <tbody>{data.map((r, i) => (
-                            <tr key={i}><td className="font-mono">{r.batch_number}</td><td>{r.product_name}</td><td>{r.material_name}</td><td className="font-mono">{formatWeight(r.expected_wastage)}</td><td className="font-mono">{formatWeight(r.actual_wastage)}</td><td className={`font-mono ${parseFloat(r.variance) > 0 ? 'text-red' : 'text-green'}`}>{formatWeight(r.variance)}</td><td>{formatPercent(r.variance_percent)}</td></tr>
-                        ))}</tbody>
+                        <thead><tr><th>Item</th><th>Warehouse</th><th className="text-right">Balance</th><th className="text-right">Avg Cost</th><th className="text-right">Value</th></tr></thead>
+                        <tbody>
+                            {items.map((r, i) => (
+                                <tr key={i}>
+                                    <td className="font-bold">{r.item_name}</td>
+                                    <td>{r.warehouse_name}</td>
+                                    <td className="text-right font-mono">{formatNumber(r.balance)}</td>
+                                    <td className="text-right font-mono">{formatCurrency(r.weighted_avg_cost)}</td>
+                                    <td className="text-right font-mono font-bold">{formatCurrency(r.total_value)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                        <tfoot>
+                            <tr style={{ borderTop: '2px solid var(--accent-silver)' }}>
+                                <td colSpan={4} className="font-bold">Grand Total</td>
+                                <td className="text-right font-mono font-bold">{formatCurrency(grandTotal)}</td>
+                            </tr>
+                        </tfoot>
                     </table>
-                );
-            case 'efficiency':
-                return (
-                    <>
-                        <div className="chart-card mb-4">
-                            <div className="chart-title">Production Efficiency</div>
-                            <ResponsiveContainer width="100%" height={250}>
-                                <BarChart data={data}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#1e2d3d" />
-                                    <XAxis dataKey="batch_number" tick={{ fill: '#94a3b8', fontSize: 10 }} />
-                                    <YAxis tick={{ fill: '#94a3b8', fontSize: 12 }} domain={[0, 100]} />
-                                    <Tooltip contentStyle={{ background: '#1a2332', border: '1px solid #1e2d3d', borderRadius: 8 }} />
-                                    <Bar dataKey="efficiency_percent" fill="#10b981" radius={[4, 4, 0, 0]} />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                        <table className="data-table">
-                            <thead><tr><th>Batch</th><th>Product</th><th>Planned</th><th>Completed</th><th>Rejected</th><th>Efficiency</th></tr></thead>
-                            <tbody>{data.map((r, i) => (
-                                <tr key={i}><td className="font-mono">{r.batch_number}</td><td>{r.product_name}</td><td>{r.planned_quantity}</td><td>{r.completed_quantity}</td><td className={r.rejected_quantity > 0 ? 'text-red' : ''}>{r.rejected_quantity}</td><td className={`font-bold ${parseFloat(r.efficiency_percent) >= 90 ? 'text-green' : 'text-amber'}`}>{formatPercent(r.efficiency_percent)}</td></tr>
-                            ))}</tbody>
-                        </table>
-                    </>
-                );
-            case 'wip':
-                return (
-                    <table className="data-table">
-                        <thead><tr><th>Product</th><th>In Process</th><th>Completed</th><th>Rejected</th></tr></thead>
-                        <tbody>{data.map((r, i) => (
-                            <tr key={i}><td className="font-bold">{r.product_name}</td><td className="font-mono text-blue">{parseFloat(r.total_in_process).toFixed(0)}</td><td className="font-mono text-green">{parseFloat(r.total_completed).toFixed(0)}</td><td className="font-mono text-red">{parseFloat(r.total_rejected).toFixed(0)}</td></tr>
-                        ))}</tbody>
-                    </table>
-                );
-            case 'batch':
-                return (
-                    <table className="data-table">
-                        <thead><tr><th>Batch</th><th>Product</th><th>Planned</th><th>Completed</th><th>Status</th><th>Started</th><th>Finished</th></tr></thead>
-                        <tbody>{data.map((r, i) => (
-                            <tr key={i}><td className="font-mono">{r.batch_number}</td><td>{r.product_name}</td><td>{r.planned_quantity}</td><td>{r.completed_quantity}</td><td><span className={`badge ${statusColor(r.status)}`}>{r.status.replace('_', ' ')}</span></td><td>{r.started_at ? new Date(r.started_at).toLocaleDateString() : '—'}</td><td>{r.completed_at ? new Date(r.completed_at).toLocaleDateString() : '—'}</td></tr>
-                        ))}</tbody>
-                    </table>
-                );
-            case 'variance':
-                return (
-                    <table className="data-table">
-                        <thead><tr><th>Batch</th><th>Product</th><th>Material</th><th>Required</th><th>Actual</th><th>Variance</th><th>Variance %</th></tr></thead>
-                        <tbody>{data.map((r, i) => (
-                            <tr key={i}><td className="font-mono">{r.batch_number}</td><td>{r.product_name}</td><td>{r.material_name}</td><td className="font-mono">{formatWeight(r.required_quantity)}</td><td className="font-mono">{formatWeight(r.actual_quantity)}</td><td className="font-mono">{formatWeight(r.variance)}</td><td>{formatPercent(r.variance_percent)}</td></tr>
-                        ))}</tbody>
-                    </table>
-                );
-            default: return null;
+                </>
+            );
         }
+
+        if (activeTab === 'wip-summary') {
+            const items = Array.isArray(data) ? data : [];
+            return (
+                <table className="data-table">
+                    <thead><tr><th>Order #</th><th>Qty (Ordered/Done)</th><th className="text-right">Material Cost</th><th className="text-right">Expense Cost</th><th className="text-right">Total WIP</th></tr></thead>
+                    <tbody>
+                        {items.map((r, i) => (
+                            <tr key={i}>
+                                <td className="font-bold font-mono">{r.order_number}</td>
+                                <td className="font-mono">{formatNumber(r.order_qty)} / {formatNumber(r.completed_qty)}</td>
+                                <td className="text-right font-mono">{formatCurrency(r.material_cost)}</td>
+                                <td className="text-right font-mono">{formatCurrency(r.expense_cost)}</td>
+                                <td className="text-right font-mono font-bold">{formatCurrency(r.total_wip_value)}</td>
+                            </tr>
+                        ))}
+                        {items.length === 0 && <tr><td colSpan={5} className="empty-state"><p>No WIP data.</p></td></tr>}
+                    </tbody>
+                </table>
+            );
+        }
+
+        if (activeTab === 'material-consumption') {
+            const items = Array.isArray(data) ? data : [];
+            const totalCost = items.reduce((s, r) => s + (r.total_cost || 0), 0);
+            return (
+                <table className="data-table">
+                    <thead><tr><th>Material</th><th className="text-right">Qty Consumed</th><th className="text-right">Total Cost</th></tr></thead>
+                    <tbody>
+                        {items.map((r, i) => (
+                            <tr key={i}>
+                                <td className="font-bold">{r.item_name}</td>
+                                <td className="text-right font-mono">{formatNumber(r.total_quantity)}</td>
+                                <td className="text-right font-mono font-bold">{formatCurrency(r.total_cost)}</td>
+                            </tr>
+                        ))}
+                        {items.length === 0 && <tr><td colSpan={3} className="empty-state"><p>No consumption data.</p></td></tr>}
+                    </tbody>
+                    <tfoot>
+                        <tr style={{ borderTop: '2px solid var(--accent-silver)' }}>
+                            <td colSpan={2} className="font-bold">Total</td>
+                            <td className="text-right font-mono font-bold">{formatCurrency(totalCost)}</td>
+                        </tr>
+                    </tfoot>
+                </table>
+            );
+        }
+
+        if (activeTab === 'production-cost') {
+            return (
+                <div>
+                    {/* Header Stats */}
+                    <div className="stats-grid mb-6">
+                        <div className="stat-card">
+                            <div className="stat-icon cyan">🔧</div>
+                            <div className="stat-info"><div className="stat-label">Order</div><div className="stat-value">{data.order_number}</div></div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-icon green">📦</div>
+                            <div className="stat-info"><div className="stat-label">Qty (Ordered / Done)</div><div className="stat-value">{formatNumber(data.order_qty)} / {formatNumber(data.completed_qty)}</div></div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-icon amber">💵</div>
+                            <div className="stat-info"><div className="stat-label">Total Cost</div><div className="stat-value">{formatCurrency(data.total_production_cost)}</div></div>
+                        </div>
+                        <div className="stat-card">
+                            <div className="stat-icon red">📊</div>
+                            <div className="stat-info"><div className="stat-label">Unit Cost</div><div className="stat-value">{formatCurrency(data.unit_cost)}</div></div>
+                        </div>
+                    </div>
+
+                    {/* Materials */}
+                    <div className="card mb-4">
+                        <h4 className="card-title mb-4">Materials ({formatCurrency(data.total_material_cost)})</h4>
+                        <table className="data-table">
+                            <thead><tr><th>Material</th><th className="text-right">Quantity</th><th className="text-right">Cost</th></tr></thead>
+                            <tbody>
+                                {(data.materials || []).map((m, i) => (
+                                    <tr key={i}>
+                                        <td className="font-bold">{m.item_name}</td>
+                                        <td className="text-right font-mono">{formatNumber(m.quantity)}</td>
+                                        <td className="text-right font-mono">{formatCurrency(m.cost)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                            <tfoot>
+                                <tr style={{ borderTop: '2px solid var(--accent-silver)' }}>
+                                    <td colSpan={2} className="font-bold">Subtotal</td>
+                                    <td className="text-right font-mono font-bold">{formatCurrency(data.total_material_cost)}</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+
+                    {/* Expenses */}
+                    <div className="card">
+                        <h4 className="card-title mb-4">Expenses ({formatCurrency(data.total_expenses)})</h4>
+                        <table className="data-table">
+                            <thead><tr><th>Type</th><th>Description</th><th>Date</th><th className="text-right">Amount</th></tr></thead>
+                            <tbody>
+                                {(data.expenses || []).map((e, i) => (
+                                    <tr key={i}>
+                                        <td><span className="badge badge-silver">{(e.expense_type || '').replace(/_/g, ' ')}</span></td>
+                                        <td>{e.description}</td>
+                                        <td className="font-mono" style={{ fontSize: 'var(--font-xs)' }}>{formatDate(e.date)}</td>
+                                        <td className="text-right font-mono">{formatCurrency(e.amount)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                            <tfoot>
+                                <tr style={{ borderTop: '2px solid var(--accent-silver)' }}>
+                                    <td colSpan={3} className="font-bold">Subtotal</td>
+                                    <td className="text-right font-mono font-bold">{formatCurrency(data.total_expenses)}</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                    </div>
+                </div>
+            );
+        }
+
+        return null;
     };
 
     return (
@@ -132,23 +206,123 @@ export default function Reports() {
             <div className="page-header">
                 <div>
                     <h1 className="page-title">Reports</h1>
-                    <p className="page-subtitle">Manufacturing analytics & insights</p>
+                    <p className="page-subtitle">Manufacturing & inventory analytics</p>
                 </div>
+                {data && <button className="btn btn-secondary" onClick={() => setPrintMode(true)}>🖨️ Print Report</button>}
             </div>
+            <div className="filter-bar mb-4 flex gap-3" style={{ overflowX: 'auto', flexWrap: 'wrap' }}>
+                {tabs.map(tab => <button key={tab.id} className={`btn ${activeTab === tab.id ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveTab(tab.id)}>{tab.label}</button>)}
+                {activeTab === 'production-cost' && (
+                    <select className="form-select" style={{ maxWidth: 300 }} value={selectedOrder} onChange={e => setSelectedOrder(e.target.value)}>
+                        <option value="">Select production order...</option>
+                        {prodOrders.map(o => <option key={o.id} value={o.id}>{o.order_number || o.id.substring(0, 8)} — {o.product_name || 'Product'} ({o.status})</option>)}
+                    </select>
+                )}
+            </div>
+            <div className="card"><div className="data-table-wrapper">{renderContent()}</div></div>
 
-            <div className="filter-bar mb-4">
-                {tabs.map(t => (
-                    <button key={t.key} className={`btn ${activeTab === t.key ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setActiveTab(t.key)}>
-                        {t.label}
-                    </button>
-                ))}
-            </div>
+            {/* Print Report */}
+            {printMode && data && (
+                <PrintSlip
+                    title={tabs.find(t => t.id === activeTab)?.label || 'Report'}
+                    refNumber={`RPT-${new Date().toISOString().split('T')[0]}`}
+                    date={new Date().toLocaleDateString()}
+                    onClose={() => setPrintMode(false)}
+                >
+                    {activeTab === 'inventory-valuation' && (() => {
+                        const items = Array.isArray(data) ? data : [];
+                        return (
+                            <PrintTable headers={['Item', 'Warehouse', { label: 'Balance', align: 'right' }, { label: 'Avg Cost', align: 'right' }, { label: 'Value', align: 'right' }]}>
+                                {items.map((r, i) => (
+                                    <tr key={i}>
+                                        <td>{r.item_name}</td>
+                                        <td>{r.warehouse_name}</td>
+                                        <td className="text-right font-mono">{formatNumber(r.balance)}</td>
+                                        <td className="text-right font-mono">{formatCurrency(r.weighted_avg_cost)}</td>
+                                        <td className="text-right font-mono font-bold">{formatCurrency(r.total_value)}</td>
+                                    </tr>
+                                ))}
+                                <tr style={{ borderTop: '2px solid #333' }}>
+                                    <td colSpan={4} className="font-bold">Grand Total</td>
+                                    <td className="text-right font-mono font-bold">{formatCurrency(items.reduce((s, r) => s + (r.total_value || 0), 0))}</td>
+                                </tr>
+                            </PrintTable>
+                        );
+                    })()}
 
-            <div className="card">
-                <div className="data-table-wrapper">
-                    {loading ? <div className="empty-state"><p>Loading report...</p></div> : renderTable()}
-                </div>
-            </div>
+                    {activeTab === 'wip-summary' && (() => {
+                        const items = Array.isArray(data) ? data : [];
+                        return (
+                            <PrintTable headers={['Order #', 'Qty (Ordered/Done)', { label: 'Material Cost', align: 'right' }, { label: 'Expense Cost', align: 'right' }, { label: 'Total WIP', align: 'right' }]}>
+                                {items.map((r, i) => (
+                                    <tr key={i}>
+                                        <td className="font-mono">{r.order_number}</td>
+                                        <td>{formatNumber(r.order_qty)} / {formatNumber(r.completed_qty)}</td>
+                                        <td className="text-right font-mono">{formatCurrency(r.material_cost)}</td>
+                                        <td className="text-right font-mono">{formatCurrency(r.expense_cost)}</td>
+                                        <td className="text-right font-mono font-bold">{formatCurrency(r.total_wip_value)}</td>
+                                    </tr>
+                                ))}
+                            </PrintTable>
+                        );
+                    })()}
+
+                    {activeTab === 'material-consumption' && (() => {
+                        const items = Array.isArray(data) ? data : [];
+                        return (
+                            <PrintTable headers={['Material', { label: 'Qty Consumed', align: 'right' }, { label: 'Total Cost', align: 'right' }]}>
+                                {items.map((r, i) => (
+                                    <tr key={i}>
+                                        <td>{r.item_name}</td>
+                                        <td className="text-right font-mono">{formatNumber(r.total_quantity)}</td>
+                                        <td className="text-right font-mono font-bold">{formatCurrency(r.total_cost)}</td>
+                                    </tr>
+                                ))}
+                                <tr style={{ borderTop: '2px solid #333' }}>
+                                    <td colSpan={2} className="font-bold">Total</td>
+                                    <td className="text-right font-mono font-bold">{formatCurrency(items.reduce((s, r) => s + (r.total_cost || 0), 0))}</td>
+                                </tr>
+                            </PrintTable>
+                        );
+                    })()}
+
+                    {activeTab === 'production-cost' && data && (
+                        <>
+                            <PrintDetail label="Order" value={data.order_number} />
+                            <PrintDetail label="Quantity" value={`${formatNumber(data.order_qty)} ordered / ${formatNumber(data.completed_qty)} completed`} />
+                            <PrintDetail label="Total Production Cost" value={formatCurrency(data.total_production_cost)} />
+                            <PrintDetail label="Unit Cost" value={formatCurrency(data.unit_cost)} />
+
+                            <h4 className="print-section-title">Materials ({formatCurrency(data.total_material_cost)})</h4>
+                            <PrintTable headers={['Material', { label: 'Qty', align: 'right' }, { label: 'Cost', align: 'right' }]}>
+                                {(data.materials || []).map((m, i) => (
+                                    <tr key={i}>
+                                        <td>{m.item_name}</td>
+                                        <td className="text-right font-mono">{formatNumber(m.quantity)}</td>
+                                        <td className="text-right font-mono">{formatCurrency(m.cost)}</td>
+                                    </tr>
+                                ))}
+                            </PrintTable>
+
+                            <h4 className="print-section-title">Expenses ({formatCurrency(data.total_expenses)})</h4>
+                            <PrintTable headers={['Type', 'Description', { label: 'Amount', align: 'right' }]}>
+                                {(data.expenses || []).map((e, i) => (
+                                    <tr key={i}>
+                                        <td>{(e.expense_type || '').replace(/_/g, ' ')}</td>
+                                        <td>{e.description}</td>
+                                        <td className="text-right font-mono">{formatCurrency(e.amount)}</td>
+                                    </tr>
+                                ))}
+                            </PrintTable>
+
+                            <div className="print-total-row">
+                                <span>Total Production Cost</span>
+                                <span>{formatCurrency(data.total_production_cost)}</span>
+                            </div>
+                        </>
+                    )}
+                </PrintSlip>
+            )}
         </div>
     );
 }
